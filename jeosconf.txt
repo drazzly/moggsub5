@@ -1,0 +1,233 @@
+руководство - https://github.com/meowehh/DemoExam_2026/blob/main/Module_1.md
+
+1. настройка Virtual Network:
+
+(если не будет начального первого адаптера, то сделать его)
+
+     1) Edit -> Virtual Network Editor -> Add Network -> vmnet10, vmnet11
+           Настройка vmnet 10: Subnet IP 172.16.1.0 Subnet mask 255.255.255.240
+           Настройка vmnet 11: Subnet IP 172.16.2.0 Subnet mask 255.255.255.240
+
+
+2. Создание машины ISP
+ 
+     2.1) New Virtual Machine -> Typical -> выбрать ISO jeos -> Linux, Debian 13x 64bit -> дать имя ISP
+     2.2) Конфигурация ISP: 30гб диска (выбрать "store virtual dist as a single file)
+     2.3) Customize Hardware:
+           Memory: 2048mb
+           Processors: Number of processors - 2
+                       Number of cores per processor - 1
+           Удалить сетевой адаптер.
+
+
+3. Настройка машины ISP.
+      3.1) 1/7 - Yes, I agree
+           2/7 - Автоматическая разбивка диска, выбрать Clear selected before applying profile
+           5/7 - первое -> next.
+           6/7 - пароль поставить toor
+           7/7 - ничего не трогать, можно поменять только имя на ISP.
+
+
+      3.2) После загрузки машины выключить машину и добавить 3 сетевых адаптера. Надо зайти в Edit virtual machine settings.
+      3.3) Слева снизу Add.. -> Network Adapter. Потом справа поставить галочку на Bridged и можно поставить галочку на Replicate physical network connection state, после потыкать MAC(в Advanced... снизу).
+      3.4) Добавить еще 2 адаптера.
+            Network Adapter 2 -> Custom: vmnet10
+            Network Adapter 3 -> Custom: vmnet11
+ 
+После запустить машину.
+
+
+    Прописать ip a на всякий случай, должны показаться 2: ens  3: ens 4: ens.
+
+
+      3.5) Доступ к интернету.
+          Команды: cd /etc/net/ifaces/
+                   mkdir ens36 (мой личный случай. вместо 36 прописать те числа, которые идут в "2: ens"
+                   cd ens36
+                   cat <<EOF > options (далее просто нажал ентер прописал нажал ентер и так далее)
+                        BOOTPROTO=dhcp
+                        TYPE=eth
+                        EOF
+          Далее systemctl restart network
+
+После появится интернет.
+ 
+      3.6) Установка полезностей.
+           Прописать apt-get update, apt-get install nano
+                       
+           Потом можно будет прописать шаражный репозиторий обновлений
+           
+           apt-get update
+           apt-get dist-upgrade
+           apt-get install sudo openssh-server
+           systemctl enable --now sshd - после можно подключиться через ssh
+
+      3.7) После настроить два адаптера.
+            mkdir /etc/net/ifaces/ens37 (мой личный случай. вместо 37 прописать те числа, которые идут в "3: ens")
+            cd ens37
+            nano options
+              BOOTPROTO=static
+              TYPE=eth
+            nano ipv4address
+              172.16.1.1/28
+
+              cd..
+
+            mkdir /etc/net/ifaces/ens38 (мой личный случай. вместо 38 прописать те числа, которые идут в "4: ens")
+            cd ens38
+            nano options
+              BOOTPROTO=static
+              TYPE=eth
+            nano ipv4address
+              172.16.2.1/28
+
+    systemctl restart network
+    ip -c -br a
+
+    Должен быть примерно такой вывод у команды:
+
+lo               UNKNOWN        127.0.0.1/8 ::1/128 
+ens           UP             192.168.120.157/24 fe80::be24:11ff:fe74:fa7/64
+ens          UP             172.16.1.1/28 fe80::be24:11ff:fed1:a8dc/64 
+ens           UP             172.16.2.1/28 fe80::be24:11ff:fed6:e399/64
+
+  4. Настройка dhcp сервера.
+
+    4.1)apt-get update
+        apt-get install dhcp-server
+        nano /etc/dhcp/dhcpd.conf 
+_______________________________________________________________
+ddns-update-style none;
+authoritative;
+
+# Настройка для второй машины (Интерфейс ens37) (vmnet10)
+subnet 172.16.1.0 netmask 255.255.255.240 {
+    range 172.16.1.2 172.16.1.14;
+    option routers 172.16.1.1;
+    option subnet-mask 255.255.255.240;                           <---ВСЕ ЭТО ВСТАВИТЬ В dhcpd.conf!!!
+    option domain-name-servers 8.8.8.8, 1.1.1.1;
+    default-lease-time 86400;
+    max-lease-time 172800;
+}
+
+# Настройка для третьей машины (Интерфейс ens38) (vmnet11)
+subnet 172.16.2.0 netmask 255.255.255.240 {
+    range 172.16.2.2 172.16.2.14;
+    option routers 172.16.2.1;
+    option subnet-mask 255.255.255.240;
+    option domain-name-servers 8.8.8.8, 1.1.1.1;
+    default-lease-time 86400;
+    max-lease-time 172800;
+}
+_______________________________________________________________
+
+         nano /etc/sysconfig/dhcpd - изменить или добавить строку DHCPDARGS="ens37 ens38"
+         systemctl enable --now dhcpd
+         sysctl -w net.ipv4.ip_forward=1
+         nano /etc/sysctl.d/90-forward.conf
+         net.ipv4.ip_forward = 1
+         nano /etc/sysctl.d/90-forward.conf <- вписать всего одну строку -> net.ipv4.ip_forward = 1
+         apt-get install iptables
+         iptables -t nat -F
+         iptables -F FORWARD
+         iptables -t nat -A POSTROUTING -o ens36 -j MASQUERADE
+         iptables -A FORWARD -i ens37 -o ens36 -j ACCEPT
+         iptables -A FORWARD -i ens36 -o ens37 -m state --state RELATED,ESTABLISHED -j ACCEPT
+         iptables -A FORWARD -i ens38 -o ens36 -j ACCEPT
+         iptables -A FORWARD -i ens36 -o ens38 -m state --state RELATED,ESTABLISHED -j ACCEPT
+         iptables-save > /etc/sysconfig/iptables
+         systemctl enable --now iptables
+
+  
+   5. Создание машины HQ-RTR.
+         5.1) Абсолютно всё тоже самое как и с ISP. На 7/7 поставить имя HQ-RTR
+         5.2) Добавить сетевой адаптер -> Custom: vmnet10
+         5.3) Настройка сетевого адаптера:
+                  cd /etc/net/ifaces
+                  mkdir ens36
+                  cd ens36
+                  cat <<EOF > options
+                     BOOTPROTO=static
+                     TYPE=eth 
+                     EOF
+                  cat <<EOF > ipv4route
+                     default via 172.16.1.1
+                     EOF
+                  cat <<EOF > resolv.conf 
+                     nameserver 8.8.8.8
+                     EOF
+                  cat <<EOF > ipv4address
+                     172.16.1.2/28
+                     EOF
+
+                systemctl restart network 
+
+                проверить работоспособность можно командой apt-get update/ping 8.8.8.8
+                и потом так же установить все полезные шняги(apt-get install -y sudo nano openssh-server)
+
+ добавить пользователя:
+useradd -m -s /bin/bash user
+passwd user - задать пароль
+usermod -aG wheel user
+потом nano /etc/sudoers настроить
+               
+        6. Создание машины BR-RTR.
+            6.1) Абсолютно все тоже самое. На 7/7 поставить имя BR-RTR
+            6.2) Добавить сетевой адаптер -> Custom: vmnet11
+            6.3) Настройка сетевого адаптера:
+                    cd /etc/net/ifaces
+                  mkdir ens36
+                  cd ens36
+                  cat <<EOF > options
+                     BOOTPROTO=static
+                     TYPE=eth 
+                     EOF
+                  cat <<EOF > ipv4route
+                     default via 172.16.2.1
+                     EOF
+                  cat <<EOF > resolv.conf 
+                     nameserver 8.8.8.8
+                     EOF
+                  cat <<EOF > ipv4address
+                     172.16.2.2/28
+                     EOF
+
+          systemctl restart network
+
+                проверить работоспособность можно командой apt-get update/ping 8.8.8.8
+                и потом так же установить все полезные шняги (apt-get install -y sudo nano openssh-server)
+
+
+
+   Настройка часового пояса для всех машин: 
+                apt-get update && apt-get install tzdata -y
+                timedatectl set-timezone Asia/Yekaterinburg  (2 раза)
+                timedatectl 
+
+
+
+
+
+
+
+                                       
+                                            
+                                            
+                  
+                     
+              
+          
+
+
+
+  
+           
+
+
+          
+
+           
+ 
+ 
+ 
+ 
